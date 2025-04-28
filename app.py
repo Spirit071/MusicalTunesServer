@@ -97,4 +97,4 @@ def get_audio_url():
 
 if __name__ == "__main__":
     init_db()
-    app.run(debug=False, threaded=True, port=5000)
+    app.run(debug=False, threaded=True, port='0.0.0.0')
