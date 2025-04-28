@@ -1,40 +1,72 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import yt_dlp, time, sqlite3, os
+import os, psycopg2, threading
+import yt_dlp
 
 app = Flask(__name__)
 CORS(app)
 
-DB_PATH = "audio_cache.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
 
 def init_db():
-    if not os.path.exists(DB_PATH):
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS audio_cache (
-            video_id TEXT PRIMARY KEY,
-            audio_url TEXT NOT NULL
-        )
-        """)
-        conn.commit()
-        conn.close()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS audio_cache (
+        video_id TEXT PRIMARY KEY,
+        audio_url TEXT NOT NULL
+    )
+    """)
+    conn.commit()
+    conn.close()
 
 def get_cached_url(video_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT audio_url FROM audio_cache WHERE video_id = ?", (video_id,))
+    cursor.execute("SELECT audio_url FROM audio_cache WHERE video_id = %s", (video_id,))
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
 
 def set_cached_url(video_id, audio_url):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("REPLACE INTO audio_cache (video_id, audio_url) VALUES (?, ?)",
-                   (video_id, audio_url))
+    cursor.execute("""
+        INSERT INTO audio_cache (video_id, audio_url)
+        VALUES (%s, %s)
+        ON CONFLICT (video_id) DO UPDATE
+        SET audio_url = EXCLUDED.audio_url
+    """, (video_id, audio_url))
     conn.commit()
     conn.close()
+
+def fetch_and_cache(video_id, result_container):
+    try:
+        with yt_dlp.YoutubeDL({
+            "format": "bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extractor_args": {
+                "youtube": ["skip=dash,player_response"]
+            }
+        }) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            audio_url = info.get("url")
+            if audio_url:
+                set_cached_url(video_id, audio_url)
+                result_container['audio_url'] = audio_url
+            else:
+                result_container['error'] = "No audio URL found"
+    except Exception as e:
+        result_container['error'] = str(e)
+
+@app.route('/', methods=["GET"])
+def home():
+    return "Hello!"
 
 @app.route("/get-audio-url", methods=["POST"])
 def get_audio_url():
@@ -48,24 +80,16 @@ def get_audio_url():
     if audio_url:
         return jsonify({"audioUrl": audio_url})
 
-    try:
-        with yt_dlp.YoutubeDL({
-            "format": "bestaudio/best",
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "extractor_args": {
-                "youtube": ["skip=dash,player_response"]
-            }
-        }) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-            audio_url = info.get("url")
-            if not audio_url:
-                return jsonify({"error": "No audio URL found"}), 500
-            set_cached_url(video_id, audio_url)
-            return jsonify({"audioUrl": audio_url})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    result_container = {}
+
+    thread = threading.Thread(target=fetch_and_cache, args=(video_id, result_container))
+    thread.start()
+    thread.join()
+
+    if 'audio_url' in result_container:
+        return jsonify({"audioUrl": result_container['audio_url']})
+    else:
+        return jsonify({"error": result_container.get('error', 'Unknown error')}), 500
 
 if __name__ == "__main__":
     init_db()
