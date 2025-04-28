@@ -9,7 +9,11 @@ CORS(app)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(
+        DATABASE_URL,
+        sslmode='verify-full',
+        sslrootcert='/etc/ssl/certs/ca-certificates.crt'  # <--- Use system certs
+    )
 
 def init_db():
     conn = get_db_connection()
