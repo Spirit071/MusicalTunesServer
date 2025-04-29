@@ -54,6 +54,7 @@ def fetch_and_cache(video_id, result_container):
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
+            "cookiefile": "cookies.txt",
             "extractor_args": {
                 "youtube": ["skip=dash,player_response"]
             }
